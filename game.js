@@ -963,6 +963,22 @@ function hostSetupConnection(conn) {
   });
 }
 
+// STUN alone only gets peers through "easy" NATs — on the same wifi that's
+// enough, but two different networks (different cities, mobile data,
+// stricter routers) often need a relay. TURN fixes that; without one,
+// devices on different networks silently fail to connect to each other.
+const PEER_CONFIG = {
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    ],
+  },
+};
+
 function startHosting() {
   clearMenuError();
   myName = document.getElementById('name-input').value.trim().slice(0, 16) || 'Host';
@@ -971,7 +987,7 @@ function startHosting() {
 
   const tryCreate = (attemptsLeft) => {
     roomCode = genRoomCode();
-    peer = new Peer(peerIdFor(roomCode));
+    peer = new Peer(peerIdFor(roomCode), PEER_CONFIG);
     peer.on('open', (id) => {
       myId = id;
       hostPlayers[id] = { id, name: myName, color: myColor, conn: null };
@@ -1054,24 +1070,41 @@ function joinGame() {
   role = 'guest';
   roomCode = code;
 
-  peer = new Peer();
+  peer = new Peer(PEER_CONFIG);
   peer.on('open', () => {
     const conn = peer.connect(peerIdFor(code), { reliable: true });
     hostConn = conn;
-    conn.on('open', () => conn.send(JSON.stringify({ t: 'hello', name: myName })));
+
+    let opened = false;
+    let failed = false;
+    const failToConnect = () => {
+      if (opened || failed) return;
+      failed = true;
+      clearTimeout(connectTimeout);
+      showMenuError("Found the room but couldn't connect — this can happen across different networks. Try again, or switch off a VPN/restrictive wifi if either of you is on one.");
+      try { conn.close(); } catch {}
+    };
+    const connectTimeout = setTimeout(failToConnect, 15000);
+
+    conn.on('open', () => {
+      opened = true;
+      clearTimeout(connectTimeout);
+      conn.send(JSON.stringify({ t: 'hello', name: myName }));
+    });
     conn.on('data', (raw) => {
       let data;
       try { data = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return; }
       applyIncoming(data);
     });
     conn.on('close', () => {
+      if (!opened) { failToConnect(); return; }
       showToast('The host ended the race.');
       backToMenu();
     });
-    conn.on('error', () => showMenuError("Couldn't reach that room — check the code."));
+    conn.on('error', failToConnect);
   });
   peer.on('error', (err) => {
-    if (err.type === 'peer-unavailable') showMenuError('No race found with that code.');
+    if (err.type === 'peer-unavailable') showMenuError('No race found with that code — double check it with your host.');
     else showMenuError('Connection error: ' + err.type);
   });
 }
