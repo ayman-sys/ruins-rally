@@ -965,19 +965,23 @@ function hostSetupConnection(conn) {
 
 // STUN alone only gets peers through "easy" NATs — on the same wifi that's
 // enough, but two different networks (different cities, mobile data,
-// stricter routers) often need a relay. TURN fixes that; without one,
-// devices on different networks silently fail to connect to each other.
-const PEER_CONFIG = {
-  config: {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    ],
-  },
-};
+// stricter routers) often need a relay, or the connection silently never
+// comes up. TURN credentials are fetched fresh from Metered so they can't
+// go stale; a hardcoded free public relay is not reliable enough to ship.
+const TURN_CREDENTIALS_URL = 'https://ruins-rally.metered.live/api/v1/turn/credentials?apiKey=af10cb2116294ea3d803f9dfe142ee79ba31';
+const FALLBACK_ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
+let iceServersPromise = null;
+
+function getIceServers() {
+  if (!iceServersPromise) {
+    iceServersPromise = fetch(TURN_CREDENTIALS_URL)
+      .then((res) => { if (!res.ok) throw new Error('bad status ' + res.status); return res.json(); })
+      .then((servers) => (Array.isArray(servers) && servers.length ? servers : FALLBACK_ICE_SERVERS))
+      .catch(() => FALLBACK_ICE_SERVERS);
+  }
+  return iceServersPromise;
+}
+getIceServers(); // pre-warm on page load so it's usually already cached by the time someone clicks Host/Join
 
 function startHosting() {
   clearMenuError();
@@ -985,9 +989,10 @@ function startHosting() {
   myColor = COLORS[0];
   role = 'host';
 
-  const tryCreate = (attemptsLeft) => {
+  const tryCreate = async (attemptsLeft) => {
     roomCode = genRoomCode();
-    peer = new Peer(peerIdFor(roomCode), PEER_CONFIG);
+    const iceServers = await getIceServers();
+    peer = new Peer(peerIdFor(roomCode), { config: { iceServers } });
     peer.on('open', (id) => {
       myId = id;
       hostPlayers[id] = { id, name: myName, color: myColor, conn: null };
@@ -1062,7 +1067,7 @@ function applyIncoming(data) {
   }
 }
 
-function joinGame() {
+async function joinGame() {
   clearMenuError();
   myName = document.getElementById('name-input').value.trim().slice(0, 16) || 'Racer';
   const code = document.getElementById('join-code-input').value.trim().toUpperCase();
@@ -1070,7 +1075,8 @@ function joinGame() {
   role = 'guest';
   roomCode = code;
 
-  peer = new Peer(PEER_CONFIG);
+  const iceServers = await getIceServers();
+  peer = new Peer({ config: { iceServers } });
   peer.on('open', () => {
     const conn = peer.connect(peerIdFor(code), { reliable: true });
     hostConn = conn;
