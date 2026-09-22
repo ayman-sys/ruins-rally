@@ -427,18 +427,99 @@ const mount = document.getElementById('three-mount');
 const canvasWrap = document.getElementById('canvas-wrap');
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x141b11);
-scene.fog = new THREE.Fog(0x141b11, 480, 1500);
+scene.background = new THREE.Color(0x2b3d34);
+scene.fog = new THREE.Fog(0x384a3a, 520, 1500);
 
 const camera = new THREE.PerspectiveCamera(62, 16 / 9, 0.5, 3000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
 mount.appendChild(renderer.domElement);
 
-scene.add(new THREE.HemisphereLight(0xcfe0a8, 0x1c2410, 0.95));
-const sunLight = new THREE.DirectionalLight(0xfff3d6, 1.05);
+scene.add(new THREE.HemisphereLight(0xdcead0, 0x25301c, 1.1));
+const sunLight = new THREE.DirectionalLight(0xfff0cf, 2.4);
 sunLight.position.set(420, 620, 180);
-scene.add(sunLight);
+sunLight.target.position.set(0, 0, 0);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.shadow.camera.left = -520;
+sunLight.shadow.camera.right = 520;
+sunLight.shadow.camera.top = 520;
+sunLight.shadow.camera.bottom = -520;
+sunLight.shadow.camera.near = 100;
+sunLight.shadow.camera.far = 1400;
+sunLight.shadow.bias = -0.0006;
+scene.add(sunLight, sunLight.target);
+
+function buildSky() {
+  const geo = new THREE.SphereGeometry(2400, 24, 16);
+  const top = new THREE.Color(0x1c3a30);
+  const horizon = new THREE.Color(0xe8c078);
+  const pos = geo.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i) / 2400;
+    const t = Math.pow(clamp(1 - (y + 0.05), 0, 1), 1.6);
+    const c = top.clone().lerp(horizon, t);
+    colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, toneMapped: false });
+  const sky = new THREE.Mesh(geo, mat);
+  scene.add(sky);
+}
+buildSky();
+
+function makeGrassTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#33482a';
+  g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2200; i++) {
+    const x = Math.random() * 256, y = Math.random() * 256;
+    const shade = Math.random();
+    g.fillStyle = shade < 0.5 ? 'rgba(70,98,52,0.55)' : 'rgba(24,36,18,0.45)';
+    const w = 1 + Math.random() * 2.4;
+    g.fillRect(x, y, w, w);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(160, 160);
+  tex.anisotropy = 4;
+  if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function makeAsphaltTexture() {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#57534a';
+  g.fillRect(0, 0, 128, 512);
+  for (let i = 0; i < 1400; i++) {
+    const x = Math.random() * 128, y = Math.random() * 512;
+    g.fillStyle = Math.random() < 0.5 ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.1)';
+    const w = 1 + Math.random() * 2;
+    g.fillRect(x, y, w, w);
+  }
+  g.fillStyle = '#e6dcc3';
+  g.fillRect(6, 0, 6, 512);
+  g.fillRect(116, 0, 6, 512);
+  g.fillStyle = '#f1c874';
+  for (let y = 0; y < 512; y += 46) g.fillRect(59, y, 10, 26);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(1, 1);
+  tex.anisotropy = 4;
+  if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 function resizeThree() {
   const w = canvasWrap.clientWidth || 1;
@@ -449,12 +530,15 @@ function resizeThree() {
 }
 window.addEventListener('resize', resizeThree);
 
-function ribbonGeometry(offsetFn, doubleSided) {
+function ribbonGeometry(offsetFn, vRepeatPerStep) {
   const positions = [];
+  const uvs = [];
   for (let i = 0; i <= TRACK_N; i++) {
     const idx = i % TRACK_N;
     const [lo, hi] = offsetFn(idx);
     positions.push(lo.x, lo.y, lo.z, hi.x, hi.y, hi.z);
+    const v = i * (vRepeatPerStep || 0);
+    uvs.push(0, v, 1, v);
   }
   const indices = [];
   for (let i = 0; i < TRACK_N; i++) {
@@ -463,6 +547,7 @@ function ribbonGeometry(offsetFn, doubleSided) {
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geo.setIndex(indices);
   geo.computeVertexNormals();
   return geo;
@@ -472,13 +557,14 @@ function buildStaticScene() {
   // ground
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(4200, 4200),
-    new THREE.MeshStandardMaterial({ color: 0x2b3d20, roughness: 1 }),
+    new THREE.MeshStandardMaterial({ map: makeGrassTexture(), roughness: 1 }),
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.05;
+  ground.receiveShadow = true;
   scene.add(ground);
 
-  // road ribbon
+  // road ribbon — asphalt texture with lane markings, tiled along its length
   const roadGeo = ribbonGeometry((idx) => {
     const p = TRACK[idx];
     const t = tangentAt(idx);
@@ -486,8 +572,9 @@ function buildStaticScene() {
     const l = toWorldPos(p.x + n.x * TRACK_HALF, p.y + n.y * TRACK_HALF);
     const r = toWorldPos(p.x - n.x * TRACK_HALF, p.y - n.y * TRACK_HALF);
     return [l, r];
-  });
-  const road = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({ color: 0x6b675e, roughness: 0.95 }));
+  }, 0.12);
+  const road = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({ map: makeAsphaltTexture(), roughness: 0.92, side: THREE.DoubleSide }));
+  road.receiveShadow = true;
   scene.add(road);
 
   // guard-rail walls on both edges — visualizes the hard collision boundary
@@ -500,6 +587,8 @@ function buildStaticScene() {
       return [toWorldPos(ex, ez, 0), toWorldPos(ex, ez, 5.5)];
     });
     const wall = new THREE.Mesh(wallGeo, new THREE.MeshStandardMaterial({ color: 0xd9cdb2, roughness: 0.8, side: THREE.DoubleSide }));
+    wall.castShadow = true;
+    wall.receiveShadow = true;
     scene.add(wall);
   }
 
@@ -517,60 +606,75 @@ function buildStaticScene() {
     const postGeo = new THREE.BoxGeometry(3, height, 3);
     const postA = new THREE.Mesh(postGeo, mat); postA.position.set(a.x, height / 2, a.z);
     const postB = new THREE.Mesh(postGeo, mat); postB.position.set(b.x, height / 2, b.z);
+    postA.castShadow = postB.castShadow = true;
     scene.add(postA, postB);
     const span = Math.hypot(b.x - a.x, b.z - a.z);
     const beam = new THREE.Mesh(new THREE.BoxGeometry(span, 3, 3), mat);
     beam.position.set((a.x + b.x) / 2, height, (a.z + b.z) / 2);
     beam.rotation.y = -Math.atan2(b.z - a.z, b.x - a.x);
+    beam.castShadow = true;
     scene.add(beam);
   });
 
   // hazards
   for (const b of HAZARDS.boost) {
-    const wp = toWorldPos(b.x, b.y, 0.06);
+    const wp = toWorldPos(b.x, b.y, 0.08);
     const pad = new THREE.Mesh(
       new THREE.CircleGeometry(b.r, 24),
-      new THREE.MeshStandardMaterial({ color: 0xf1c874, emissive: 0x6b4a12, roughness: 0.4 }),
+      new THREE.MeshStandardMaterial({ color: 0xf1c874, emissive: 0x8a6318, emissiveIntensity: 0.7, roughness: 0.35 }),
     );
     pad.rotation.x = -Math.PI / 2;
     pad.position.set(wp.x, wp.y, wp.z);
+    pad.receiveShadow = true;
     scene.add(pad);
   }
   for (const m of HAZARDS.mud) {
-    const wp = toWorldPos(m.x, m.y, 0.06);
+    const wp = toWorldPos(m.x, m.y, 0.08);
     const patch = new THREE.Mesh(
       new THREE.CircleGeometry(m.r, 20),
       new THREE.MeshStandardMaterial({ color: 0x5b4326, roughness: 1 }),
     );
     patch.rotation.x = -Math.PI / 2;
     patch.position.set(wp.x, wp.y, wp.z);
+    patch.receiveShadow = true;
     scene.add(patch);
   }
 
   // jungle decorations
   const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3d2a1a, roughness: 1 });
-  const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f6b34, roughness: 0.9 });
   const stoneMat = new THREE.MeshStandardMaterial({ color: 0x8a7d63, roughness: 0.9 });
   const stoneCapMat = new THREE.MeshStandardMaterial({ color: 0xa89873, roughness: 0.9 });
+  const leafPalette = [0x3f6b34, 0x4a7a3c, 0x365e2c, 0x527f42];
   for (const d of DECOR) {
     const wp = toWorldPos(d.x, d.y);
     if (d.kind === 'tree') {
       const group = new THREE.Group();
+      const leafMat = new THREE.MeshStandardMaterial({ color: leafPalette[Math.floor(Math.abs(Math.sin(d.x * 12.9898 + d.y * 78.233)) * leafPalette.length) % leafPalette.length], roughness: 0.9 });
       const trunk = new THREE.Mesh(new THREE.CylinderGeometry(1.4 * d.s, 1.8 * d.s, 12 * d.s, 6), trunkMat);
       trunk.position.y = 6 * d.s;
+      trunk.castShadow = true;
       group.add(trunk);
-      const foliage = new THREE.Mesh(new THREE.ConeGeometry(11 * d.s, 24 * d.s, 7), leafMat);
-      foliage.position.y = 20 * d.s;
-      group.add(foliage);
+      const foliageLow = new THREE.Mesh(new THREE.ConeGeometry(11.5 * d.s, 17 * d.s, 7), leafMat);
+      foliageLow.position.y = 16 * d.s;
+      foliageLow.castShadow = true;
+      group.add(foliageLow);
+      const foliageTop = new THREE.Mesh(new THREE.ConeGeometry(8 * d.s, 15 * d.s, 7), leafMat);
+      foliageTop.position.y = 26 * d.s;
+      foliageTop.castShadow = true;
+      group.add(foliageTop);
+      group.rotation.y = (d.x * 3.7 + d.y * 1.3) % (Math.PI * 2);
       group.position.set(wp.x, 0, wp.z);
       scene.add(group);
     } else {
       const group = new THREE.Group();
       const pillar = new THREE.Mesh(new THREE.BoxGeometry(11 * d.s, 26 * d.s, 11 * d.s), stoneMat);
       pillar.position.y = 13 * d.s;
+      pillar.castShadow = true;
+      pillar.receiveShadow = true;
       group.add(pillar);
       const cap = new THREE.Mesh(new THREE.BoxGeometry(14 * d.s, 4 * d.s, 14 * d.s), stoneCapMat);
       cap.position.y = 26 * d.s + 2 * d.s;
+      cap.castShadow = true;
       group.add(cap);
       group.position.set(wp.x, 0, wp.z);
       scene.add(group);
@@ -643,12 +747,16 @@ function createCarMesh(color) {
   wing.position.set(-9.2, 11.5, 0);
   group.add(wing);
 
+  group.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+
   const shadow = new THREE.Mesh(
     new THREE.CircleGeometry(11, 20),
     new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28 }),
   );
   shadow.rotation.x = -Math.PI / 2;
   shadow.position.y = 0.04;
+  shadow.castShadow = false;
+  shadow.receiveShadow = false;
   group.add(shadow);
 
   return group;
@@ -1035,12 +1143,14 @@ function keyToAction(e) {
   }
 }
 window.addEventListener('keydown', (e) => {
+  if (!screens.race.classList.contains('active')) return;
   const a = keyToAction(e);
   if (!a) return;
   e.preventDefault();
   if (!keyState[a]) { keyState[a] = true; sendInput(keyState); }
 });
 window.addEventListener('keyup', (e) => {
+  if (!screens.race.classList.contains('active')) return;
   const a = keyToAction(e);
   if (!a) return;
   if (keyState[a]) { keyState[a] = false; sendInput(keyState); }
